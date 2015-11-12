@@ -4,7 +4,9 @@ import pandas
 import numpy as np
 import scipy
 import statistics as stat
+import math
 
+SQUARED = "squared"
 
 def get_data_from_csv(file_name):
     cvs_data = pandas.read_csv(file_name)
@@ -25,9 +27,24 @@ def generate_csv_data(input_file_name, n=30, a=[1, 2, 0], b=[-5, 0, 0], c=[10, 1
     df.to_csv(input_file_name, index=False)
 
 
+def generate_logistic_csv_data(input_file_name, n=30, a=[1, 2, 0], b=[-5, 0, 0], c=[10, 1, 3]):
+    m = 5
+    data = np.ones((n, m), dtype=np.float)
+    for i in range(3):
+        f_with_noise = lambda row, col: row * a[i] + b[i]
+        data[:, i] = np.fromfunction(f_with_noise, (n, 1)).transpose(1,0)
+    for i in range(data.shape[0]):
+        data[i, m - 1] = sum(c[j] * data[i, j] for j in range(3)) + 10 * random.gauss(0, 0.7)
+        data[i, m - 1] = 0.0 if data[i, m - 1] > 0 else 1.0
+        print data[i, m - 1]
+
+    df = pandas.DataFrame(data)
+    df.to_csv(input_file_name, index=False)
+
+
 file_name = "data.csv"
 samples_count = 30
-generate_csv_data(file_name, samples_count, [1, 2, 0], [-5, 0, 0], [10, 1, 3])
+generate_logistic_csv_data(file_name, samples_count, [1, 2, 0], [-5, 0, 0], [10, 1, 3])
 data = get_data_from_csv(file_name)
 
 #20, 009, 0,999, without standardization
@@ -43,6 +60,7 @@ class Regression:
     holdout_size_coef = 0.0
     l2 = 0.0
     standardization = True
+    loss_method = " " #SQUARED
 
     initial_input = np.ones(data.shape, dtype=np.float)
     initial_input[:, 1:] = data[:, :-1]
@@ -66,19 +84,29 @@ class Regression:
                 break
             x[:, i] = (x[:, i] - mean)/variance
 
+    def h(self, x_row):
+        if self.loss_method == SQUARED:
+            return x_row.dot(self.gradient)
+        return 1.0/(1 + math.exp(-1 * x_row.dot(self.gradient)))
+
+    def loss_in_row(self, x_row, y_val):
+        if self.loss_method == SQUARED:
+            return (self.h(x_row) - y_val)**2
+        return -(y_val * math.log(self.h(x_row)) + (1 - y_val) * math.log(1 - self.h(x_row)))
+
     def loss(self, x, y):
         if x.shape[0] == 0:
             return 0
         ret = 0
         for i in range(x.shape[0]):
-            ret += (x[i].dot(self.gradient) - y[i])**2
+            ret += self.loss_in_row(x[i], y[i])
         l2_elem = self.l2 * sum(self.gradient[j]**2 for j in range(1, len(self.gradient)))
         return ret/(2 * x.shape[0]) + l2_elem #TODO before division?
 
-    def partial_derivate(self, x, y, point):
+    def partial_gradient(self, x, y, point):
         ret = 0.0
         for i in range(x.shape[0]):
-            ret += (self.gradient.dot(x[i]) - y[i]) * x[i, point]
+            ret += (self.h(x[i]) - y[i]) * x[i, point]
         l2_elem = self.l2 * 2 * self.gradient[point]
         return ret/x.shape[0] + l2_elem
 
@@ -86,7 +114,7 @@ class Regression:
         ret = np.zeros(len(self.gradient))
         for i in range(len(self.gradient)):
             ret[i] = self.gradient[i] - \
-                     self.learning_rate * self.partial_derivate(x, y, i)
+                     self.learning_rate * self.partial_gradient(x, y, i)
         return ret
 
     def learn(self):
@@ -131,7 +159,10 @@ class Regression:
         print self.validation_input
         print self.validation_output
         plt.scatter(self.initial_input[:, 1], self.initial_output, color='blue')
-        plt.scatter(self.initial_input[:, 1], self.initial_input.dot(self.predictor), color='red')
+        output = np.zeros(len(self.initial_input), dtype=np.float)
+        for i in range(len(output)):
+            output[i] = self.h(self.initial_input[i])
+        plt.scatter(self.initial_input[:, 1], output, color='red')
         plt.show()
 
 
