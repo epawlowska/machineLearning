@@ -6,6 +6,8 @@ import scipy
 import statistics as stat
 import math
 
+import data_generator as dg
+
 SQUARED = "squared"
 
 def get_data_from_csv(file_name):
@@ -13,78 +15,69 @@ def get_data_from_csv(file_name):
     data = np.array(cvs_data)
     return data
 
-
-def generate_csv_data(input_file_name, n=30, a=[1, 2, 0], b=[-5, 0, 0], c=[10, 1, 3]):
-    m = 5
-    data = np.ones((n, m), dtype=np.float)
-    for i in range(3):
-        f_with_noise = lambda row, col: row * a[i] + b[i]
-        data[:, i] = np.fromfunction(f_with_noise, (n, 1)).transpose(1,0)
-    for i in range(data.shape[0]):
-        data[i, m - 1] = sum(c[j] * data[i, j] for j in range(3)) + 10 * random.gauss(0, 0.7)
-
-    df = pandas.DataFrame(data)
-    df.to_csv(input_file_name, index=False)
-
-
-def generate_logistic_csv_data(input_file_name, n=30, a=[1, 2, 0], b=[-5, 0, 0], c=[10, 1, 3]):
-    m = 5
-    data = np.ones((n, m), dtype=np.float)
-    for i in range(3):
-        f_with_noise = lambda row, col: row * a[i] + b[i]
-        data[:, i] = np.fromfunction(f_with_noise, (n, 1)).transpose(1,0)
-    for i in range(data.shape[0]):
-        data[i, m - 1] = sum(c[j] * data[i, j] for j in range(3)) + 10 * random.gauss(0, 0.7)
-        data[i, m - 1] = 0.0 if data[i, m - 1] > 0 else 1.0
-
-    df = pandas.DataFrame(data)
-    df.to_csv(input_file_name, index=False)
-
-
-file_name = "data.csv"
 samples_count = 50
-generate_csv_data(file_name, samples_count, [1, 2, 0], [-5, 0, 0], [10, 1, 3])
-data = get_data_from_csv(file_name)
+dg.generate_csv_data("train.csv", samples_count, [1, 2, 0], [-5, 0, 0], [10, 1, 3])
+dg.generate_test_data("test.csv", 2 * samples_count, [1, 2, 0], [-5, 0, 0], [10, 1, 3])
 
-#20, 009, 0,999, without standardization
+#14, 0.009, 0,99, without standardization
 #30, 099, 0,9999, standarization
 #10, 1.0, 1.0, n_iter = 50000, hash_trick, adagrad
 #50, 1.0, 0.9999, n_iter = 10000, hash_trick, rmsprob COOL!
 
 class Regression:
 
+    train_file = "train.csv"
+    test_file = "test.csv"
+    out_file = "out.csv"
+
     learning_rate = 1.0
-    decay_rate = 0.9999
+    decay_rate = 0.9
     batch_size = 10
-    n_iter = 10000
+    n_iter = 5
     shuffle = True
-    holdout_size_coef = 0.2
+    holdout_size_coef = 0.3
     l2 = 0.0
-    standardization = True
+    standardization = False #True
     loss_method = SQUARED
     use_adagrad = False
     use_rmsprop = True
     use_hash_trick = True
+    ht_mod = 1
+    adagrad_cache = None
+    rmsprop_cache = None
 
     initial_input = None
     initial_output = None
 
     learning_input = None
     learning_output = None
+
     validation_input = None
     validation_output = None
-    adagrad_cache = None
-    rmsprop_cache = None
+
+    test_input = None
+    test_initial = None
+    test_output = None
 
     w = None
 
     def __init__(self):
-        self.prepare_learning_data()
+        self.prepare_data()
 
-    def prepare_learning_data(self):
-        self.initial_input = np.ones(data.shape, dtype=np.float)
-        self.initial_input[:, 1:] = data[:, :-1]
-        self.initial_output = data[:, -1:].transpose(1, 0)[0]
+    def prepare_data(self): #TODO name
+
+        train_data = get_data_from_csv(self.train_file)
+        #dg.generate_test_data(self.test_file, train_data)
+
+        test_data = get_data_from_csv(self.test_file)
+        self.test_input = np.ones((test_data.shape[0], test_data.shape[1] + 1), dtype=np.float)
+        self.test_input[:, 1:] = test_data[:, :]
+        self.test_initial = np.array(self.test_input)
+        self.test_output = np.zeros(test_data.shape[0])
+
+        self.initial_input = np.ones(train_data.shape, dtype=np.float)
+        self.initial_input[:, 1:] = train_data[:, :-1]
+        self.initial_output = train_data[:, -1:].transpose(1, 0)[0]
 
         self.extract_validation_data()
 
@@ -92,12 +85,14 @@ class Regression:
         self.learning_output = np.array(self.initial_output) #not necessary
 
         if self.use_hash_trick:
-            self.learning_input = self.hash_trick(self.learning_input, 1)
-            self.validation_input = self.hash_trick(self.validation_input, 1)
+            self.learning_input = self.hash_trick(self.learning_input, self.ht_mod)
+            self.validation_input = self.hash_trick(self.validation_input, self.ht_mod)
+            self.test_input = self.hash_trick(self.test_input, self.ht_mod)
 
         if self.standardization:
             self.standardize(self.learning_input)
             self.standardize(self.validation_input)
+            self.standardize(self.test_input)
 
         self.w = np.zeros(self.learning_input.shape[1], dtype=np.float)
         self.adagrad_cache = np.zeros(len(self.w))
@@ -145,7 +140,7 @@ class Regression:
         for i in range(x.shape[0]):
             ret += self.loss_in_row(x[i], y[i])
         l2_elem = self.l2 * sum(self.w[j]**2 for j in range(1, len(self.w)))
-        return ret/(2 * x.shape[0]) + l2_elem #TODO before division?
+        return ret/(2 * x.shape[0]) + l2_elem
 
     def gradient(self, x, y, point):
         ret = 0.0
@@ -200,20 +195,19 @@ class Regression:
                 print "break after convergence"
                 break
 
-    def show_results(self):
-        print data
-        print self.initial_input
-        print self.initial_output
-        print "learning input"
-        print self.learning_input
+    def show_train_results(self):
+        #print self.train_data
         plt.scatter(self.initial_input[:, 1], self.initial_output, color='blue')
         output = np.zeros(len(self.initial_input), dtype=np.float)
         for i in range(len(output)):
             output[i] = self.h(self.learning_input[i])
         plt.scatter(self.initial_input[:, 1], output, color='red')
+        for i in range(len(self.test_output)):
+            self.test_output[i] = self.h(self.test_input[i])
+        plt.scatter(self.test_initial[:, 1], self.test_output, color='yellow')
         plt.show()
 
 
 regression = Regression()
 regression.learn()
-regression.show_results()
+regression.show_train_results()
